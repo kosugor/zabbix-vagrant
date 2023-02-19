@@ -1,0 +1,81 @@
+ZABBIX_VERSION_MAJOR = "6.0"
+ZABBIX_VERSION_MINOR = "4"
+PHP_TIMEZONE = "UTC"
+
+Vagrant.configure("2") do |config|
+
+	config.vm.define "zabbix" do |zabbix|
+
+		config.vm.box = "bento/debian-11"
+
+		zabbix.vm.hostname = "zabbix"
+		zabbix.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
+		zabbix.vm.network "forwarded_port", guest: 10050 , host: 10050, host_ip: "127.0.0.1"
+		zabbix.vm.network "forwarded_port", guest: 10051 , host: 10051, host_ip: "127.0.0.1"
+
+        zabbix.vm.provision "shell", inline: <<-SHELL
+			cd /tmp
+			wget --quiet https://repo.zabbix.com/zabbix/#{ZABBIX_VERSION_MAJOR}/debian/pool/main/z/zabbix-release/zabbix-release_#{ZABBIX_VERSION_MAJOR}-#{ZABBIX_VERSION_MINOR}+debian11_all.deb
+			sudo dpkg -i zabbix-release_#{ZABBIX_VERSION_MAJOR}-#{ZABBIX_VERSION_MINOR}+debian11_all.deb
+			SHELL
+
+        zabbix.vm.provision "shell", path: "../scripts/install.sh"
+		zabbix.vm.provision "shell", path: "../scripts/snmp.sh"
+
+		zabbix.vm.provision "shell", inline: <<-SHELL
+			echo '----Creating database and user---- '
+			sudo -u root mysql -e "create database zabbix character set utf8mb4 collate utf8mb4_bin"
+			sudo -u root mysql -e "create user zabbix@localhost identified by 'Z4bb1xD4t4b4s3'"
+			sudo -u root mysql -e "grant all privileges on zabbix.* to zabbix@localhost"
+			sudo -u root mysql -e "set global log_bin_trust_function_creators = 1"
+
+			echo '----Creating database schema---- '
+			zcat /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -pZ4bb1xD4t4b4s3 zabbix
+			sudo -u root mysql -e "set global log_bin_trust_function_creators = 0"
+			SHELL
+
+			zabbix.vm.provision "shell", inline: <<-SHELL
+			echo '----Configuring Zabbix Server---- '
+			sudo sed -i "s/# DBHost=localhost/DBHost=localhost/" /etc/zabbix/zabbix_server.conf
+			sudo sed -i "s/# DBPassword=/DBPassword=Z4bb1xD4t4b4s3/" /etc/zabbix/zabbix_server.conf
+			
+			echo '----Starting Zabbix Server---- '
+			sudo systemctl start zabbix-server
+			systemctl enable --now zabbix-server
+			SHELL
+
+			web_config = <<-WEBCONFIG
+			<?php
+				$DB["TYPE"]				= "MYSQL";
+				$DB["SERVER"]			= "localhost";
+				$DB["PORT"]				= "0";
+				$DB["DATABASE"]			= "zabbix";
+				$DB["USER"]				= "zabbix";
+				$DB["PASSWORD"]			= "Z4bb1xD4t4b4s3";
+				$DB["SCHEMA"]			= "";
+				$DB["ENCRYPTION"]		= false;
+				$DB["KEY_FILE"]			= "";
+				$DB["CERT_FILE"]		= "";
+				$DB["CA_FILE"]			= "";
+				$DB["VERIFY_HOST"]		= false;
+				$DB["CIPHER_LIST"]		= "";
+				$DB["VAULT_URL"]		= "";
+				$DB["VAULT_DB_PATH"]	= "";
+				$DB["VAULT_TOKEN"]		= "";
+				$DB["DOUBLE_IEEE754"]	= true;
+				$ZBX_SERVER				= "localhost";
+				$ZBX_SERVER_PORT		= "10051";
+				$ZBX_SERVER_NAME		= "zabbix";
+				$IMAGE_FORMAT_DEFAULT	= IMAGE_FORMAT_PNG;
+			WEBCONFIG
+
+			zabbix.vm.provision "shell", inline: <<-SHELL
+			echo '----Configuring Zabbix Frontend---- '
+			echo '#{web_config}' > /etc/zabbix/web/zabbix.conf.php
+			sudo systemctl restart apache2
+			SHELL
+
+    end
+
+end
+
